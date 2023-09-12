@@ -357,14 +357,20 @@ class DetachedProcess:
             pass
         if taskkill:
             if myos == "windows":
-                subprocess.run(
-                    f"{taskkillpath} /F /T /PID {self.process.pid}", **invisibledict
-                )
-            else:
                 try:
-                    self._subprocesspopen[0].kill()
+                    subprocess.run(
+                        f"{taskkillpath} /F /T /PID {self.process.pid}", **invisibledict
+                    )
                 except Exception:
                     pass
+            try:
+                self._subprocesspopen[0].kill()
+            except Exception:
+                pass
+            try:
+                self._isrunning_thread.kill()
+            except Exception:
+                pass
         if self.delete_tempfiles:
             for file in [
                 self.tmpfile,
@@ -647,5 +653,4 @@ class DetachedPopen:
 
     def __getattr__(self, item):
         return None
-
 
