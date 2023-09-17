@@ -1,6 +1,6 @@
 # Similar to subprocess, but with 100% detached processes
 
-## Tested against Windows 10 / Python 3.10 / Anaconda and Ubuntu
+## Tested against Windows 10 / Python 3.11 / Anaconda and Ubuntu
 
 ### pip install detachedproc
 
@@ -60,7 +60,7 @@ It provides flexibility in handling process input and capturing output, which ca
 
 
 ```python
-
+# Important! "powershell.exe -ExecutionPolicy RemoteSigned Start-Process ..." is used to execute the subprocess, you might need to allow that.
 
 
 import subprocess
@@ -105,6 +105,8 @@ p=DetachedPopen(
     stderrbuffer=None,
     psutil_timeout=15,
     delete_tempfiles=True,
+	read_stdout_stderr_async=False,
+	args_to_83=True,
 )
 while True:
     print(p.stdout.read())
@@ -158,47 +160,11 @@ Args:
 	stderrbuffer (int or None): The maximum number of lines to buffer for standard error. Default is None.
 	psutil_timeout (int): The maximum time to wait for process information using psutil. Default is 15 seconds.
 	delete_tempfiles (bool): Whether to delete temporary files created during execution. Default is True.
-
-Attributes:
-	args (list or str): The command to be executed as a list of arguments or a single string to be parsed.
-	bufsize (int): Not used; included for compatibility with `subprocess.Popen`.
-	executable (str): Not used; included for compatibility with `subprocess.Popen`.
-	stdin (str or None): Input to be provided to the process's standard input. Default is None.
-	stdout (StdOutStdErr): An object for reading the process's standard output.
-	stderr (StdOutStdErr): An object for reading the process's standard error.
-	preexec_fn (callable or None): Not used; included for compatibility with `subprocess.Popen`.
-	close_fds (bool): Not used; included for compatibility with `subprocess.Popen`.
-	shell (bool): Not used; included for compatibility with `subprocess.Popen`.
-	cwd (str or None): The working directory for the process. Default is None.
-	env (dict or None): The environment variables to be used for the process. Default is None.
-	universal_newlines (bool or None): Not used; included for compatibility with `subprocess.Popen`.
-	startupinfo (subprocess.STARTUPINFO): Not used; included for compatibility with `subprocess.Popen`.
-	creationflags (int): Not used; included for compatibility with `subprocess.Popen`.
-	restore_signals (bool): Not used; included for compatibility with `subprocess.Popen`.
-	start_new_session (bool): Not used; included for compatibility with `subprocess.Popen`.
-	pass_fds (tuple): Not used; included for compatibility with `subprocess.Popen`.
-	user (str or None): Not used; included for compatibility with `subprocess.Popen`.
-	group (str or None): Not used; included for compatibility with `subprocess.Popen`.
-	extra_groups (list or None): Not used; included for compatibility with `subprocess.Popen`.
-	encoding (str or None): Not used; included for compatibility with `subprocess.Popen`.
-	errors (str or None): Not used; included for compatibility with `subprocess.Popen`.
-	text (bool or None): Not used; included for compatibility with `subprocess.Popen`.
-	umask (int): Not used; included for compatibility with `subprocess.Popen`.
-	pipesize (int): Not used; included for compatibility with `subprocess.Popen`.
-	wait (bool): Whether to wait for the process to complete before returning. Default is False.
-	verb (str or None): The verb to use when executing the process (Windows only). Default is None.
-	what_if (bool): Whether to simulate the execution of the process without actually running it (Windows only).
-		Default is False.
-	window_style (str): The window style for the process (Windows only).
-		Possible values: "Normal", "Hidden", "Minimized", "Maximized". Default is "Normal".
-	print_stdout (bool): Whether to print the process's standard output. Default is True.
-	print_stderr (bool): Whether to print the process's standard error. Default is True.
-	capture_stdout (bool): Whether to capture the process's standard output. Default is True.
-	capture_stderr (bool): Whether to capture the process's standard error. Default is True.
-	stdoutbuffer (int or None): The maximum number of lines to buffer for standard output. Default is None (No limit).
-	stderrbuffer (int or None): The maximum number of lines to buffer for standard error. Default is None (No limit).
-	psutil_timeout (int): The maximum time to wait for process information using psutil. Default is 15 seconds.
-	delete_tempfiles (bool): Whether to delete temporary files created during execution. Default is True.
+	read_stdout_stderr_async (bool): Whether to read stdout/stderr during execution (True means slower execution).
+									 Default is False
+	args_to_83 (bool): Whether to convert arguments to 8.3 format (Windows only) - The main executable will
+					   always be converted to 8.3 format, this is only for the arguments afterwards (args[1:]).
+					   Default is True.
 
 Methods:
 	terminate(): Terminate the process.

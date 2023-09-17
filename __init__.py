@@ -1,14 +1,15 @@
 import re
 import shlex
-import sys
 from collections import deque
-import kthread
 import kthread_sleep
 import psutil
-from umacajadada import read_async
+import asyncio
+import sys
+import traceback
+from time import sleep
+import kthread
 from time import time, perf_counter
 import tempfile
-
 import shutil
 import subprocess
 import os
@@ -84,6 +85,7 @@ class DetachedProcess:
         psutil_timeout: int = 15,
         delete_tempfiles: bool = True,
         stderr_stdout_readmode="rb",
+        args_to_83=True,
     ):
         self.window_style = window_style
         self.wait = wait
@@ -138,6 +140,7 @@ class DetachedProcess:
         self._isrunning_thread = None
         self.stderr_stdout_readmode = stderr_stdout_readmode
         self._subprocesspopen = []
+        self.args_to_83 = args_to_83
         self.run()
 
     def __str__(self):
@@ -236,8 +239,11 @@ class DetachedProcess:
                     f"""{x.replace('"', f'{os.sep}{os.sep}"')}""" for x in self.cmd[1:]
                 ]
                 for a in _ArgumentList:
-                    cva = convert_path_in_string(a)
-                    ArgumentList.append(a)
+                    if self.args_to_83:
+                        cva = convert_path_in_string(a)
+                        ArgumentList.append(cva)
+                    else:
+                        ArgumentList.append(a)
             else:
                 ArgumentList = [
                     f"""{f'{x}'.replace('"', f'`"')}""" for x in self.cmd[1:]
@@ -386,7 +392,8 @@ class DetachedProcess:
 
 
 class StdOutStdErr:
-    def __init__(self, obj, std, bytesorstring="r"):
+    def __init__(self, obj, std, bytesorstring="r", read_async=True):
+        self.read_async = read_async
         self.obj = obj
         if std == "stdout":
             self._std = self.obj._running_proc.stdoutbuffer
@@ -394,21 +401,33 @@ class StdOutStdErr:
             self._std = self.obj._running_proc.stderrbuffer
         self.bytesorstring = bytesorstring
 
-    def read(self,*args,**kwargs):
-        tmpout = []
-        if self._std:
-            tmpout = [self._std.pop(0) for _ in range(len(self._std) - 1)]
-        r = "".tmpout if self.bytesorstring == "r" else b"".join(tmpout)
-        return r
-
-    def readlines(self,*args,**kwargs):
-        if self._std:
-            tmpout = [self._std.pop(0) for _ in range(len(self._std) - 1)]
-        else:
+    def read(self, *args, **kwargs):
+        if self.read_async:
             tmpout = []
-        return tmpout
+            if self._std:
+                tmpout = [self._std.pop(0) for _ in range(len(self._std) - 1)]
+            r = "".tmpout if self.bytesorstring == "r" else b"".join(tmpout)
+            return r
+        else:
+            tmpout = self._std.copy()
+            self._std.clear()
+            r = "".tmpout if self.bytesorstring == "r" else b"".join(tmpout)
+            return r
 
-    def readline(self,*args,**kwargs):
+    def readlines(self, *args, **kwargs):
+        if self.read_async:
+            if self._std:
+                tmpout = [self._std.pop(0) for _ in range(len(self._std) - 1)]
+            else:
+                tmpout = []
+            return tmpout
+        else:
+            tmpout = self._std.copy()
+            self._std.clear()
+
+            return tmpout
+
+    def readline(self, *args, **kwargs):
         try:
             r = self._std.pop(0)
         except Exception:
@@ -417,6 +436,250 @@ class StdOutStdErr:
 
     def __getattr__(self, item):
         return None
+
+
+def _start_as_tread(file, mode, action, stoptrigger, encoding, errors):
+    t = kthread.KThread(
+        target=_read_file_async,
+        kwargs={
+            "file": file,
+            "mode": mode,
+            "action": action,
+            "stoptrigger": stoptrigger,
+            "encoding": encoding,
+            "errors": errors,
+        },
+    )
+    t.daemon = True
+    t.start()
+    return t
+
+
+def pfehler():
+    etype, value, tb = sys.exc_info()
+    traceback.print_exception(etype, value, tb)
+
+
+def _read_file_async(
+    file,
+    mode="r",
+    action=lambda line: sys.stderr.write((str(line) + "\n")),
+    stoptrigger: list | tuple = (False,),
+    encoding: str = "utf-8",
+    errors: str = "backslashreplace",
+):
+    while not os.path.exists(file):
+        sleep(0.005)
+
+    async def start_reading():
+        async def rline(_file):
+            _file.seek(0, 2)
+            while not stoptrigger[-1]:
+                line = _file.readline()
+                if not line:
+                    # await asyncio.sleep(0.01)
+                    continue
+                yield line
+
+        if "b" in mode:
+            with open(file, mode) as f:
+                reader_generator = rline(f)
+
+                while not stoptrigger[-1]:
+                    line = await anext(reader_generator)
+                    action(line)
+        else:
+            with open(file, mode, encoding=encoding, errors=errors) as f:
+                reader_generator = rline(f)
+
+                while not stoptrigger[-1]:
+                    line = await anext(reader_generator)
+                    action(line)
+
+    try:
+        return asyncio.run(start_reading())
+    except Exception:
+        pfehler()
+
+
+def read_async(
+    file: str,
+    asthread: bool = True,
+    mode: str = "r",
+    action=lambda line: sys.stderr.write((str(line) + "\n")),
+    stoptrigger: list | tuple = (False,),
+    encoding: str = "utf-8",
+    errors: str = "backslashreplace",
+):
+    """
+    Read a file asynchronously and process its content.
+
+    Args:
+        file (str): The path to the file to be read.
+        asthread (bool, optional): If True, the function will start as a thread. Default is True.
+        mode (str, optional): The mode in which the file is opened. Default is 'r' (read mode).
+        action (function, optional): A function to be applied to each line of the file. Default is to write the line to stderr.
+        stoptrigger (list | tuple, optional): A list or tuple (preferably a list) that triggers the function to stop reading when its last element is True. Default is [False].
+        encoding (str, optional): The character encoding of the file. Default is 'utf-8'.
+        errors (str, optional): How to handle encoding errors. Default is 'backslashreplace'.
+
+    Returns:
+        kthread.KThread or None: If as_thread is True, it returns a KThread object. Otherwise, it returns None.
+
+    The advantage of this function is that it allows for real-time processing of the file while it is being written by another process.
+    This is particularly useful in scenarios where the file is continuously updated, and the updates need to be processed immediately, such as in log monitoring or real-time data analysis.
+
+    Example usage:
+        from threading import Timer
+        from time import time
+        newfile = f'c:\\testfilex{str(time()).replace(".","_")}.txt'
+        stoptrigger = [False,]
+        t = read_async(
+            file=newfile,
+            as_thread=True,
+            mode="r",
+            action=lambda line: sys.stderr.write((str(line) + "\n")),
+            stoptrigger=stoptrigger,
+        )
+        Timer(5, lambda: stoptrigger.append(True)).start() # Stops after 5 seconds and doesn't print anymore, but os.system goes on.
+        os.system("ping 8.8.8.8 -n 10 > " + newfile + "")
+    """
+    if not asthread:
+        return _read_file_async(
+            file,
+            mode=mode,
+            action=action,
+            stoptrigger=stoptrigger,
+            encoding=encoding,
+            errors=errors,
+        )
+    else:
+        return _start_as_tread(file, mode, action, stoptrigger, encoding, errors)
+
+
+class DetachedProcessNoSyncRead(DetachedProcess):
+    def run(self):
+        if self.stdin:
+            self.tmpfilestdin = get_tmpfile(suffix=".txt")
+            with open(self.tmpfilestdin, "w", encoding="utf-8") as f:
+                f.write(self.stdin)
+            stdinadd = f" -RedirectStandardInput {self.tmpfilestdin} "
+        else:
+            stdinadd = ""
+
+        if myos == "windows":
+            self.tmpfile = get_tmpfile(suffix=".bat")
+        else:
+            self.tmpfile = get_tmpfile(suffix=".sh")
+        self.tmpfilestdout = get_tmpfile(suffix=".txt")
+        self.tmpfilestderr = get_tmpfile(suffix=".txt")
+
+        UseNewEnvironment = (
+            " -UseNewEnvironment $true " if self.use_new_environment else ""
+        )
+        Wait = " -Wait " if self.wait else ""
+        Verb = "" if not self.verb else f" -Verb {self.verb} "
+        WhatIf = " -WhatIf " if self.what_if else ""
+        WindowStyle = self.window_style if self.window_style else "Normal"
+
+        if "/" not in self.cmd[0] and "\\" not in self.cmd[0]:
+            self.cmd[0] = shutil.which(self.cmd[0])
+        FilePath = convert_path_in_string(self.cmd[0])
+        self._adjustedcmd.append(FilePath)
+        WorkingDirectory = (
+            os.path.dirname(FilePath)
+            if not self.working_directory
+            else convert_path_in_string(self.working_directory)
+        )
+
+        ArgumentList = []
+        try:
+            if myos == "windows":
+                _ArgumentList = [
+                    f"""{x.replace('"', f'{os.sep}{os.sep}"')}""" for x in self.cmd[1:]
+                ]
+                for a in _ArgumentList:
+                    if self.args_to_83:
+                        cva = convert_path_in_string(a)
+                        ArgumentList.append(cva)
+                    else:
+                        ArgumentList.append(a)
+            else:
+                ArgumentList = [
+                    f"""{f'{x}'.replace('"', f'`"')}""" for x in self.cmd[1:]
+                ]
+        except Exception as fe:
+            pass
+        self._adjustedcmd.extend(ArgumentList)
+        if ArgumentList:
+            if myos == "windows":
+                ArgumentList = f""" -ArgumentList \\"{' '.join(ArgumentList)}\\" """
+            else:
+                ArgumentList = f""" -ArgumentList \\"{' '.join(ArgumentList)}\\" """
+
+        else:
+            ArgumentList = ""
+
+        if myos == "windows":
+            self.wholecommandline = f"""{self.psexe} -ExecutionPolicy RemoteSigned Start-Process -FilePath {FilePath}{WhatIf}{Verb}{UseNewEnvironment}{Wait}{stdinadd}{ArgumentList}-RedirectStandardOutput {self.tmpfilestdout} -RedirectStandardError {self.tmpfilestderr} -WorkingDirectory {WorkingDirectory} -WindowStyle {WindowStyle}"""
+            self.cmd_to_execute = self.wholecommandline
+        else:
+            self.wholecommandline = f'''{self.psexe} -ExecutionPolicy RemoteSigned -Command \"Start-Process -FilePath {FilePath} {WhatIf}{Verb}{UseNewEnvironment}{Wait}{stdinadd}{ArgumentList} -RedirectStandardOutput {self.tmpfilestdout} -RedirectStandardError {self.tmpfilestderr} -WorkingDirectory {WorkingDirectory}\"'''
+
+            with open(self.tmpfile, "w") as script_file:
+                script_file.write(self.wholecommandline)
+                self.cmd_to_execute = self.wholecommandline
+            os.chmod(
+                self.tmpfile,
+                0o777,
+            )
+
+        _stoptriggerstdout = [
+            False,
+        ]
+        _stoptriggerstderr = [
+            False,
+        ]
+
+        self._oldprocs = set()
+        if myos == "windows":
+            self._subprocesspopen.append(
+                subprocess.run(
+                    self.cmd_to_execute,
+                    cwd=self.working_directory,
+                    env=os.environ.copy(),
+                    shell=True,
+                    stderr=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    **invisibledict,
+                )
+            )
+
+        else:
+            self._subprocesspopen.append(
+                subprocess.run(
+                    ["nohup", self.tmpfile],
+                    shell=False,
+                    start_new_session=True,
+                    stderr=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                )
+            )
+        # sleep(1)
+        while True:
+            try:
+                os.rename(self.tmpfilestdout, self.tmpfilestdout)
+                os.rename(self.tmpfilestderr, self.tmpfilestderr)
+                with open(self.tmpfilestdout, "rb") as f:
+                    self.stdoutbuffer = f.readlines()
+                with open(self.tmpfilestderr, "rb") as f:
+                    self.stderrbuffer = f.readlines()
+                break
+            except Exception as e:
+                kthread_sleep.sleep(0.1)
+
 
 class DetachedPopen:
     def __init__(
@@ -459,6 +722,8 @@ class DetachedPopen:
         stderrbuffer=None,
         psutil_timeout=15,
         delete_tempfiles=True,
+        read_stdout_stderr_async=False,
+        args_to_83=True,
         **kwargs,
     ):
         r"""
@@ -507,6 +772,12 @@ class DetachedPopen:
             stderrbuffer (int or None): The maximum number of lines to buffer for standard error. Default is None.
             psutil_timeout (int): The maximum time to wait for process information using psutil. Default is 15 seconds.
             delete_tempfiles (bool): Whether to delete temporary files created during execution. Default is True.
+            read_stdout_stderr_async (bool): Whether to read stdout/stderr during execution (True means slower execution).
+                                             Default is False
+            args_to_83 (bool): Whether to convert arguments to 8.3 format (Windows only) - The main executable will
+                               always be converted to 8.3 format, this is only for the arguments afterwards (args[1:]).
+                               Default is True.
+
 
         Attributes:
             args (list or str): The command to be executed as a list of arguments or a single string to be parsed.
@@ -623,7 +894,14 @@ class DetachedPopen:
         self.stderrbuffer = stderrbuffer
         self.psutil_timeout = psutil_timeout
         self.delete_tempfiles = delete_tempfiles
-        self._running_proc = DetachedProcess(
+        self.read_stdout_stderr_async = read_stdout_stderr_async
+        self.args_to_83 = args_to_83
+        self.class_to_execute = (
+            DetachedProcessNoSyncRead
+            if not self.read_stdout_stderr_async
+            else DetachedProcess
+        )
+        self._running_proc = self.class_to_execute(
             cmd=self.args,
             wait=self.wait,
             use_new_environment=False,
@@ -641,16 +919,29 @@ class DetachedPopen:
             psutil_timeout=self.psutil_timeout,
             delete_tempfiles=self.delete_tempfiles,
             stderr_stdout_readmode=bytes_or_string,
+            args_to_83=self.args_to_83,
         )
-        self.stdout = StdOutStdErr(self, "stdout", bytesorstring=bytes_or_string)
-        self.stderr = StdOutStdErr(self, "stderr", bytesorstring=bytes_or_string)
+        self.stdout = StdOutStdErr(
+            self,
+            "stdout",
+            bytesorstring=bytes_or_string,
+            read_async=self.read_stdout_stderr_async,
+        )
+        self.stderr = StdOutStdErr(
+            self,
+            "stderr",
+            bytesorstring=bytes_or_string,
+            read_async=self.read_stdout_stderr_async,
+        )
         self.terminate = self._running_proc.kill
         self.kill = self._running_proc.kill
         self.send_signal = self._running_proc.kill
         self.wait = lambda *arg, **kwargs: None
         self.poll = lambda *arg, **kwargs: None
         self.communicate = lambda *arg, **kwargs: None
+        if not self.read_stdout_stderr_async:
+            if delete_tempfiles:
+                self.kill(taskkill=False)
 
     def __getattr__(self, item):
         return None
-
